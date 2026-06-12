@@ -1,0 +1,103 @@
+# --- Query Metadata ---
+# Human-readable name for the query. Will be displayed as the title.
+name: Suspicious Windows Command Shell Execution from Unusual Parents
+
+# MITRE ATT&CK technique IDs
+mitre_ids:
+  - T1059.003
+
+# Description of what the query does and its purpose.
+description: Detects high-confidence suspicious cmd.exe execution from unusual parent processes (Office apps, browsers, web servers) combined with malicious command patterns, excluding common legitimate administrative activity.
+
+# The author or team that created the query.
+author: Security Detection Team
+
+# The required log sources to run this query successfully in Next-Gen SIEM.
+# This will be displayed in the UI to inform the user.
+log_sources:
+  - Endpoint
+
+# Tags for filtering and categorization.
+tags:
+  - Detection
+  - Hunting
+
+cs_required_modules: 
+  - Insight
+
+# --- Query Content ---
+# The actual CrowdStrike Query Language (CQL) code.
+# Using the YAML block scalar `|` allows for multi-line strings.
+cql: |
+  #event_simpleName=ProcessRollup2 event_platform=Win FileName=cmd.exe
+  | ParentBaseFileName=/^(winword|excel|outlook|powerpnt|acrord32|chrome|firefox|iexplore|msedge|w3wp|apache|nginx|tomcat|java|javaw)$/i
+  | CommandLine=/(\/c|\/k)/i
+  | CommandLine=/(\&\&|\|\||powershell|wscript|cscript|mshta|regsvr32|bitsadmin|certutil|rundll32|net\s+user.*\/add|net\s+localgroup.*\/add|whoami\s+\/all|systeminfo|nltest|dsquery|csvde|ldifde|reg\s+add|reg\s+save|vssadmin|wmic|schtasks.*\/create|curl.*http|wget.*http|Invoke-|iex\s+|IEX\s+|downloadstring|downloadfile|\^|%[a-z0-9]+%.*\^|(temp|appdata|programdata|public).*\.(bat|cmd|vbs|ps1))/i
+  | NOT CommandLine=/^(\/c\s+echo|\/c\s+cd|\/c\s+dir|\/c\s+type|\/c\s+copy|\/c\s+move|\/c\s+del|\/c\s+mkdir|\/c\s+rmdir|\/c\s+cls|\/c\s+exit|\/c\s+ver|\/c\s+title)/i
+  | NOT CommandLine=/(microsoft|windows|system32|program files|office|adobe|google|mozilla)/i
+  | case {
+      ParentBaseFileName=/^(winword|excel|outlook|powerpnt|acrord32)$/i | parent_category := "Office Application" ;
+      ParentBaseFileName=/^(chrome|firefox|iexplore|msedge)$/i | parent_category := "Web Browser" ;
+      ParentBaseFileName=/^(w3wp|apache|nginx|tomcat)$/i | parent_category := "Web Server" ;
+      ParentBaseFileName=/^(java|javaw)$/i | parent_category := "Java Runtime" ;
+      * | parent_category := "Other Suspicious" ;
+    }
+  | groupBy([aid, ComputerName, parent_category], function=[count(aid, as=cmd_count), selectLast([UserName, ParentBaseFileName, CommandLine])], limit=10)
+  | sort(cmd_count, order=desc, limit=10)
+
+# Explanation of the query.
+# Using the YAML block scalar `|` allows for multi-line strings.
+# Uses markdown for formatting on the webpage.
+explanation: |
+  This detection identifies suspicious Windows Command Shell (cmd.exe) execution by combining unusual parent processes with malicious command patterns.
+
+  ## Detection Logic
+
+  ### 1. Unusual Parent Processes (Primary Filter)
+  Focuses on processes that rarely legitimately spawn cmd.exe:
+  - **Office Applications**: Word, Excel, Outlook, PowerPoint, Acrobat Reader
+  - **Web Browsers**: Chrome, Firefox, Internet Explorer, Edge
+  - **Web Servers**: IIS (w3wp), Apache, Nginx, Tomcat
+  - **Java Runtime**: java.exe, javaw.exe (potential exploitation vector)
+
+  ### 2. Malicious Command Patterns
+  Detects multiple threat indicators:
+  - **Command Chaining**: `&&`, `||` operators for multi-command execution
+  - **LOLBin Abuse**: PowerShell, wscript, mshta, regsvr32, bitsadmin, certutil, rundll32
+  - **Account Manipulation**: `net user /add`, `net localgroup /add`
+  - **Discovery Commands**: `whoami /all`, systeminfo, nltest, dsquery, csvde, ldifde
+  - **Registry Manipulation**: `reg add`, `reg save`
+  - **Persistence Mechanisms**: `schtasks /create`, vssadmin
+  - **Download Tools**: curl, wget with HTTP/HTTPS
+  - **PowerShell Execution**: Invoke-, IEX, downloadstring, downloadfile
+  - **Obfuscation**: Caret (^) or environment variable expansion
+  - **Suspicious Scripts**: Batch/VBS/PS1 files from temp, appdata, programdata, public directories
+
+  ### 3. False Positive Reduction
+  - **Excludes Benign Commands**: Simple commands like echo, cd, dir, type, copy, move, del, mkdir, cls, exit, ver, title
+  - **Excludes Legitimate Paths**: Commands referencing Microsoft, Windows, System32, Program Files, Office, Adobe, Google, Mozilla directories
+  - **Aggregation**: Groups by host and parent category to reduce noise and identify patterns
+
+  ### 4. Output Format
+  - Shows top 10 hosts by command execution count
+  - Categorizes by parent process type for quick triage
+  - Includes last seen username, parent process, and full command line
+  - Sorted by execution count to prioritize investigation
+
+  ## Use Cases
+  - **Initial Access Detection**: Office documents or browsers spawning cmd.exe (phishing, malicious macros)
+  - **Web Shell Detection**: Web servers executing cmd.exe (compromised web applications)
+  - **Exploitation Detection**: Java runtime spawning cmd.exe (CVE exploitation)
+  - **Living-off-the-Land Detection**: Cmd.exe chaining to other system utilities
+
+  ## Investigation Tips
+  1. Review the full command line for context
+  2. Check the parent process for signs of compromise
+  3. Investigate the user account for anomalous behavior
+  4. Look for related network connections or file writes
+  5. Correlate with other security events on the same host
+
+  ## Known Limitations
+  - May generate alerts for legitimate administrative scripts run from Office/browser contexts
+  - Requires tuning for environment-specific legitimate use cases
+  - Does not detect cmd.exe spawned from already-compromised processes
